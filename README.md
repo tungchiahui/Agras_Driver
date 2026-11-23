@@ -31,9 +31,18 @@ source install/setup.bash
 ```
 
 SDK 随 `livox_ros_driver2` 自动从源码编译，安装在该包的 `install` 前缀内。
+库名为 `libagras_livox_lidar_sdk_shared.so`，与系统中可能存在的标准 Livox SDK 区分；
+同时只导出 SDK 的公共 C 接口，隔离其内置日志库与 ROS 日志库的符号。
+驱动启动时会打印 `Agras SDK library: ...` 实际路径和 `Agras SDK version: ...` 版本。
+Linux 下若 SDK 初始化接口被其他库覆盖，启动自检会报告路径并停止启动。
 无需单独安装 SDK、复制 `.so`、运行仓库启动脚本或按 CPU 架构选择预编译库。
 内存较少时可先 `export MAKEFLAGS=-j1` 限制单个包内的编译并行度。
 目标工作区若已有同名 `livox_ros_driver2`、`fast_lio` 等包，需要先选择保留哪一份实现，避免重复包名。
+
+发布到其他电脑时使用普通 `colcon build`（不带 `--symlink-install`），并保持安装目录结构。
+正式安装的驱动库使用 `$ORIGIN` RUNPATH 寻找同目录的魔改 SDK，节点入口使用 `$ORIGIN/..`；
+开发构建也使用相对的工作区内部库路径。符号链接安装仍依赖原来的源码和构建目录，不能只复制 `install/`。
+目标电脑仍需安装对应 ROS2 与系统依赖，并加载 ROS2/工作区环境；SDK 随驱动部署，官方 SDK 可同时保留。
 
 ## 启动
 
@@ -151,10 +160,57 @@ docker run --rm -it --network host \
 
 ## 开发验证
 
+### 启动成功但没有 IMU、RViz 无点云
+
+先确认实际数据：话题出现在列表中不代表有消息，RViz 的订阅也可能使话题出现在列表中。
+驱动在收到首条 IMU 数据后才创建 `/livox/imu` 发布器。
+
+```bash
+ros2 topic hz /livox/lidar/pointcloud
+ros2 topic hz /livox/imu
+ss -lunp | rg ':(60001|60003)\b'
+```
+
+若雷达 `192.168.1.10` 可达、主机地址为 `192.168.1.20/24`，但驱动只监听 `56000`，
+检查运行进程实际加载的 SDK：
+
+```bash
+pgrep -af livox_ros_driver2_node
+# 将下面的 PID 替换为驱动进程号
+rg 'livox.*sdk.*so' /proc/PID/maps
+```
+
+旧版构建可能受 `LD_LIBRARY_PATH` 顺序影响，误加载 `/usr/local/lib/liblivox_lidar_sdk_shared.so`，
+导致初始化提示成功但收不到 Agras 数据。停止旧驱动，用当前源码重新编译
+`colcon build --symlink-install --packages-select livox_ros_driver2`，重新加载工作区并启动。
+修复后的进程应加载本工作区的 `libagras_livox_lidar_sdk_shared.so`。
+启动日志中的 `Agras SDK library:` 会直接给出该库的实际路径；符号链接安装会显示构建目录下的真实文件。
+仅需临时恢复旧构建时，可在启动前把本包库目录置于最前：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export LD_LIBRARY_PATH="$(ros2 pkg prefix livox_ros_driver2)/lib:$LD_LIBRARY_PATH"
+ros2 launch agras_bringup view.launch.py
+```
+
+RViz 使用 `/livox/lidar/pointcloud`，Fixed Frame 为 `livox_frame`，Reliability 为 Best Effort。
+
+### 离线回归
+
 `tools/tests/` 只供开发时做离线回归，不是用户编译或启动的前置步骤。
 运行前加载已编译工作区；使用回环配置和独立 ROS_DOMAIN_ID，避免干扰其他 ROS 会话。
 RViz 自动显示测试另需 Xvfb；常规启动不需要它。
 旧入口参考保存在 `docs/legacy_launch/`，不安装为当前 launch。
+`smoke_test.py` 包含官方同名库优先、启动路径日志、错误 SDK 接口覆盖和正常退出检查。
+使用普通安装后，可额外运行迁移验证：
+
+```bash
+python3 tools/tests/sdk_relocation_test.py /absolute/path/to/install/livox_ros_driver2
+```
+
+该检查将包内库复制到临时目录，在库搜索路径中只保留 ROS2、系统与模拟旧 SDK 路径，
+确认驱动通过相对 RUNPATH 加载迁移后的魔改 SDK，并正常退出。
 
 ## 原作者 README
 

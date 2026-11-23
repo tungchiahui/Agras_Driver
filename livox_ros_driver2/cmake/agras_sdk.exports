@@ -1,0 +1,17 @@
+/* Public C API from Livox-SDK2/include/livox_lidar_api.h. */
+{
+  global:
+    GetLivoxLidar*;
+    LivoxLidar*;
+    SetLivoxLidar*;
+    QueryLivoxLidar*;
+    EnableLivoxLidar*;
+    DisableLivoxLidar*;
+    DisableLivoxSdkConsoleLogger;
+    SaveLivoxLidarSdkLoggerFile;
+    UpgradeLivoxLidars;
+    StartForcedHeating;
+    StopForcedHeating;
+  local:
+    *;
+};

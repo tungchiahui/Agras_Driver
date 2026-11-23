@@ -35,6 +35,9 @@
 #include "ext_imu_bridge.h"
 #include "lddc.h"
 #include "lds_lidar.h"
+#ifdef BUILDING_ROS2
+#include "sdk_diagnostics.h"
+#endif
 
 using namespace livox_ros;
 
@@ -120,6 +123,8 @@ namespace livox_ros
 DriverNode::DriverNode(const rclcpp::NodeOptions & node_options)
 : Node("livox_driver_node", node_options)
 {
+  VerifyAgrasSdkLibrary(this->get_logger());
+
   DRIVER_INFO(*this, "Livox Ros Driver2 Version: %s", LIVOX_ROS_DRIVER2_VERSION_STRING);
 
   /** Init default system parameter */

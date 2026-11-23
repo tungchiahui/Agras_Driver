@@ -30,7 +30,7 @@ def packet(kind, payload, count=1, version=1):
 
 
 class Driver:
-    def __init__(self, directory, name, config, xfer=0):
+    def __init__(self, directory, name, config, xfer=0, env=None):
         self.path = Path(directory) / (name + '.json')
         self.path.write_text(json.dumps(config))
         self.log = tempfile.TemporaryFile(mode='w+')
@@ -38,7 +38,7 @@ class Driver:
             str(EXE), '--ros-args', '-p', 'user_config_path:=' + str(self.path),
             '-p', 'xfer_format:=' + str(xfer), '-p', 'frame_id:=livox_frame',
             '-p', 'ext_imu_enable:=false', '-p', 'publish_freq:=10.0',
-        ], stdout=self.log, stderr=subprocess.STDOUT)
+        ], stdout=self.log, stderr=subprocess.STDOUT, env=env)
 
     def output(self):
         self.log.seek(0)
@@ -213,17 +213,56 @@ def main():
     rclpy.init()
     try:
         with tempfile.TemporaryDirectory() as directory:
-            idle = Driver(directory, 'idle', loopback_config())
+            # Reproduce a legacy SDK ahead of the workspace in the search path.
+            # An invalid legacy file makes accidental selection fail immediately.
+            legacy = Path(directory) / 'legacy-sdk'
+            legacy.mkdir()
+            (legacy / 'liblivox_lidar_sdk_shared.so').write_text('not the Agras SDK\n')
+            env = dict(os.environ, LD_LIBRARY_PATH=str(legacy) + ':/usr/local/lib:' +
+                       os.environ.get('LD_LIBRARY_PATH', ''))
+            idle = Driver(directory, 'idle', loopback_config(), env=env)
             time.sleep(4)
             assert idle.proc.poll() is None, idle.output()
+            maps = Path('/proc/{}/maps'.format(idle.proc.pid)).read_text()
+            sdk = (ROOT / 'lib/libagras_livox_lidar_sdk_shared.so').resolve()
+            assert str(sdk) in maps, maps
+            assert 'liblivox_lidar_sdk_shared.so' not in maps, maps
+            output = idle.output()
+            assert 'Agras SDK library: ' + str(sdk) in output, output
+            assert 'Agras SDK version: ' in output, output
             idle.stop()
+            RESULTS.append(dict(check='bundled-sdk-priority', passed=True,
+                                legacy_sdk_shadow_ignored=True))
             RESULTS.append(dict(check='no-radar-start-stop', passed=True))
+            # A preloaded SDK can interpose C symbols even with a distinct
+            # SONAME. Verify that startup rejects the wrong implementation.
+            shim = legacy / 'libwrong-sdk.so'
+            subprocess.run(['cc', '-shared', '-fPIC', '-x', 'c', '-', '-o', str(shim)],
+                           input='_Bool LivoxLidarSdkInit(void) { return 0; }\n',
+                           text=True, check=True, capture_output=True)
+            wrong = Driver(directory, 'wrong-sdk', loopback_config(),
+                           env=dict(os.environ, LD_PRELOAD=str(shim)))
+            try:
+                code = wrong.proc.wait(timeout=8)
+                output = wrong.output()
+                assert code != 0, output
+                assert 'Agras SDK library: ' + str(shim) in output, output
+                assert 'Agras SDK library verification failed' in output, output
+                assert 'Init lds lidar success' not in output, output
+            finally:
+                if wrong.proc.poll() is None:
+                    wrong.proc.kill()
+                    wrong.proc.wait()
+            RESULTS.append(dict(check='wrong-sdk-rejected', passed=True))
             stream_check(directory, 0)
             stream_check(directory, 1)
             stream_check(directory, 4)
             stream_check(directory, 0, standard=True)
             # An unavailable host address must fail clearly rather than look healthy.
-            invalid = Driver(directory, 'missing-host-address', json.loads(CONFIG.read_text()))
+            invalid_cfg = loopback_config()
+            for key in ('cmd_data_ip', 'push_msg_ip', 'point_data_ip', 'imu_data_ip'):
+                invalid_cfg['MID360']['host_net_info'][key] = '192.0.2.123'
+            invalid = Driver(directory, 'missing-host-address', invalid_cfg)
             try:
                 code = invalid.proc.wait(timeout=8)
             except subprocess.TimeoutExpired:

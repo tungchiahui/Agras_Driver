@@ -22,3 +22,12 @@ Local changes are confined to:
 The author's Agras-specific port and discovery handling is retained. Licenses
 and third-party notices remain in the vendored source. No global SDK installation,
 download step, firmware update, or precompiled architecture binary is required.
+
+The parent ROS2 package gives the shared library the distinct output name
+`libagras_livox_lidar_sdk_shared.so` so a globally installed stock SDK cannot
+override it through `LD_LIBRARY_PATH`. On Linux, `cmake/agras_sdk.exports` in the
+ROS2 package exports only the public C API and keeps the bundled spdlog/fmt C++
+symbols private, preventing ABI collisions with ROS's system logging libraries.
+The parent package also assigns relative build/install RUNPATHs and verifies the
+resolved SDK initialization entry point before starting devices or worker threads.
+Startup logs show the canonical library path and the SDK's numeric version.
